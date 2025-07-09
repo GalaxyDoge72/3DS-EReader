@@ -1,0 +1,24 @@
+{
+    "configurations": [
+        {
+            "name": "devkitPro 3DS",
+            "includePath": [
+                "${workspaceFolder}/**",
+                "${env:DEVKITPRO}/libctru/include", // For libctru headers
+                "${env:DEVKITPRO}/devkitARM/lib/gcc/arm-none-eabi/15.1.0/include", // IMPORTANT: REPLACE XXXX with your GCC version!
+                "${env:DEVKITPRO}/devkitARM/lib/gcc/arm-none-eabi/15.1.0/include-fixed", // IMPORTANT: REPLACE XXXX
+                "${env:DEVKITPRO}/devkitARM/arm-none-eabi/include",
+                "${env:DEVKITPRO}/portlibs/3ds/include" // For installed devkitPro libraries like minizip
+],
+            "defines": [
+                "ARM11", // Define ARM11 for 3DS development
+                "__3DS__" // Another common define for 3DS projects
+            ],
+            "compilerPath": "${env:DEVKITARM}/bin/arm-none-eabi-gcc.exe", // Path to the GCC compiler for ARM
+            "cStandard": "c11", // Or "c17", depending on your project's C standard
+            "cppStandard": "c++11", // Or "c++14", "c++17", etc.
+            "intelliSenseMode": "gcc-arm" // Use GCC IntelliSense for ARM
+        }
+    ],
+    "version": 4
+}

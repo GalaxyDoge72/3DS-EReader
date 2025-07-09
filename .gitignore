@@ -1,0 +1,8 @@
+3DS-EReader.3dsx
+source/main.cpp
+3DS-EReader.elf
+3DS-EReader.smdh
+build/3DS-EReader.map
+build/3DS-EReader.lst
+build/main.o
+build/main.d

@@ -7,7 +7,7 @@
 using namespace std;
 
 // Check if the /ebooks/ directory exists on the SD card
-bool epubDirExists() {
+bool DirExists() {
     DIR* dir = opendir("sdmc:/ebooks");
     if (dir) {
         closedir(dir);
@@ -34,36 +34,69 @@ vector<string> searchEPub(const string& epubPath) {
 }
 
 void drawList(const vector<string>& files, int selectedIndex) {
-    
+    consoleClear();
+    printf("Select an ePub:\n\n");
+    for (size_t i = 0; i < files.size(); i++) {
+        if ((int)i == selectedIndex) {
+            printf(" > %s\n", files[i].c_str());
+        }
+        else {
+            printf("   %s\n", files[i].c_str());
+        }
+    }
+    printf("\nUse D-Pad UP/DOWN. A to select. Start to exit.");
 }
 
 int main(int argc, char** argv) {
     gfxInitDefault();
     consoleInit(GFX_TOP, NULL);
-
-    if (epubDirExists()) {
-        vector<string> epubs = searchEPub("sdmc:/ebooks");
-        if (!epubs.empty()) {
-            printf("Found ePub files:\n");
-            for (const auto& file : epubs) {
-                printf(" - %s\n", file.c_str());
-            }
-        } else {
-            printf("No ePub files found in /ebooks/.\n");
+    // Panic if we can't find the folder //
+    if (!DirExists()) {
+        consoleClear();
+        printf("The path 'sdmc:/ebooks' was not found.\nEnsure that you have created a folder named 'ebooks' in the ROOT OF YOUR SD CARD.");
+        printf("\nPress any key to exit.\n");
+        
+        while (aptMainLoop()) {
+            hidScanInput();
+            if (hidKeysDown()) break; // End the program once the user presses buttons //
+            gspWaitForVBlank();
         }
-    } else {
-        printf("/ebooks directory not found.\n");
+
+        gfxExit();
+        return 0;
+
     }
 
-    printf("\nPress START to exit.\n");
+    vector<string> ePubList = searchEPub("sdmc:/ebooks");
+    if (ePubList.empty()) {
+        consoleClear();
+        printf("No .epub files were found.\n");
+        printf("\nPress Start to exit.");
+        while (aptMainLoop()) {
+            hidScanInput();
+            if (hidKeysDown() & KEY_START) break;
+            gspWaitForVBlank();
+        }
+        gfxExit();
+        return 0;
+    }
+
+    int selected = 0;
+    drawList(ePubList, selected);
+
     while (aptMainLoop()) {
         hidScanInput();
-        if (hidKeysDown() & KEY_START) break;
-        gfxFlushBuffers();
-        gfxSwapBuffers();
-        gspWaitForVBlank();
-    }
+        u32 kDown = hidKeysDown();
+        
+        if (kDown & KEY_START) break;
 
-    gfxExit();
-    return 0;
+        if (kDown & (KEY_CPAD_DOWN | KEY_UP)) {
+            selected = (selected + 1) % ePubList.size(); // Ensure wrap around //
+            drawList(ePubList, selected);
+        }
+        if (kDown & (KEY_UP | KEY_CPAD_UP)) {
+            selected = (selected - 1 + ePubList.size()) % ePubList.size();
+            drawList(ePubList, selected);
+        }
+    }
 }

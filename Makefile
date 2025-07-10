@@ -57,13 +57,16 @@ CXXFLAGS	:= $(CFLAGS) -fno-rtti -fno-exceptions -std=gnu++11
 ASFLAGS	:=	-g $(ARCH)
 LDFLAGS	=	-specs=3dsx.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)
 
-LIBS	:= -lcitro3d -lctru -lm
+LIBS := -lcitro3d -lctru -ltinyxml2 -larchive -lbz2 -llz4 -llzma -lzstd -lz -lm -lcurl -lstdc++
+
+
+
 
 #---------------------------------------------------------------------------------
 # list of directories containing libraries, this must be the top level containing
 # include and lib
 #---------------------------------------------------------------------------------
-LIBDIRS	:= $(CTRULIB)
+LIBDIRS	:= $(CTRULIB) /opt/devkitpro/portlibs/3ds
 
 
 #---------------------------------------------------------------------------------

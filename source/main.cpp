@@ -18,7 +18,13 @@ using namespace tinyxml2;
 
 int maxFileSize = 96 * 1048576; // Allocate 96 MB as maximum file size //
 
-const size_t pageSize = 400; // Characters per page. Adjust this if you want to fill more of the screen.
+// Make pageSize a global, non-constant variable so it can be modified.
+size_t pageSize = 400; // Initial characters per page.
+
+// Define min/max for pageSize
+const size_t minPageSize = 200; // Minimum characters per page
+const size_t maxPageSize = 2000; // Maximum characters per page (adjust as needed based on screen fit)
+const size_t pageSizeStep = 50; // How much to increment/decrement by
 
 enum Colour {
     RED, GREEN, YELLOW, BLUE, MAGENTA, CYAN, WHITE, DEFAULT, INVALID
@@ -169,6 +175,10 @@ vector<string> searchEPub(const string& epubPath) {
 
 void drawList(const vector<string>& files, int selectedIndex) {
     consoleClear();
+    // Add explicit buffer management after clearing the console
+    gfxFlushBuffers();
+    gfxSwapBuffers();
+
     printf("Select an ePub:\n\n");
     for (size_t i = 0; i < files.size(); i++) {
         if ((int)i == selectedIndex) {
@@ -260,6 +270,10 @@ void extractText(XMLNode* node, string& output) {
 
 void displayPage(const vector<string>& pages, int currentPage) {
     consoleClear();
+    // Add explicit buffer management after clearing the console
+    gfxFlushBuffers();
+    gfxSwapBuffers();
+
     if (currentPage >= 0 && currentPage < (int)pages.size()) {
         printf("%s\n\n", pages[currentPage].c_str());
         printf("Page %d of %d\n", currentPage + 1, (int)pages.size());
@@ -339,7 +353,6 @@ string wordWrap(const string& input, size_t maxWidth) {
 
     return wrappedText;
 }
-// Add this function before your readEPUBContent function
 
 vector<string> getChapterList(const char* epubPath) {
     vector<string> chapters;
@@ -363,9 +376,6 @@ vector<string> getChapterList(const char* epubPath) {
     archive_read_free(a);
     return chapters;
 }
-
-// Read and display content from .xhtml/.html files in EPUB
-// Rename and replace your old readEPUBContent function with this
 
 void readAndDisplayChapter(const char* epubPath, const char* chapterPath) {
     struct archive* a = archive_read_new();
@@ -415,7 +425,7 @@ void readAndDisplayChapter(const char* epubPath, const char* chapterPath) {
     }
 
     fullText = wordWrap(fullText, 50); // Word wrap to 50 characters per line
-    vector<string> pages = paginateFile(fullText, pageSize);
+    vector<string> pages = paginateFile(fullText, pageSize); // Use the global pageSize
     int currentPage = 0;
     
     // This display loop remains the same
@@ -437,13 +447,15 @@ void readAndDisplayChapter(const char* epubPath, const char* chapterPath) {
     }
 }
 
-// Add this new function after readAndDisplayChapter
-
 void displayChapterMenu(const char* epubPath) {
     vector<string> chapterList = getChapterList(epubPath);
 
     if (chapterList.empty()) {
         consoleClear();
+        // Add explicit buffer management after clearing the console
+        gfxFlushBuffers();
+        gfxSwapBuffers();
+
         printf("No chapters (.xhtml files) found in this EPUB.\n");
         printf("\nPress B to return.\n");
         while (aptMainLoop()) {
@@ -457,7 +469,7 @@ void displayChapterMenu(const char* epubPath) {
     int selected = 0;
 
     while (aptMainLoop()) {
-        drawList(chapterList, selected);
+        drawList(chapterList, selected); // drawList calls consoleClear, flush, swap
         printf("\nSelect a chapter:\n");
         printf("Use D-Pad UP/DOWN. A to select. B to go back.\n");
 
@@ -474,15 +486,98 @@ void displayChapterMenu(const char* epubPath) {
         }
         if (kDown & KEY_A) {
             string chapterPath = chapterList[selected];
+            consoleClear(); // Clear before displaying chapter
+            // Add explicit buffer management after clearing the console
+            gfxFlushBuffers();
+            gfxSwapBuffers();
+
             // Call the function to read and display only the selected chapter
             readAndDisplayChapter(epubPath, chapterPath.c_str()); 
 
         }
 
         gspWaitForVBlank();
-        consoleClear(); // Clear console for the next loop iteration to redraw menu
+        // consoleClear(); // This was here before, but drawList already clears at start of loop
     }
 }
+
+// Function to display the settings menu
+void displaySettingsMenu() {
+    consoleClear();
+    int selectedSetting = 0;
+    const int numSettings = 2; // Page Size, Text Color
+    string settingsOptions[numSettings] = {"Page Size", "Text Color"};
+
+    while (aptMainLoop()) {
+        consoleClear();
+        // Add explicit buffer management after clearing the console
+        // This might help ensure the clear is fully rendered before new text is drawn
+        gfxFlushBuffers();
+        gfxSwapBuffers();
+
+        printf("--- Settings ---\n\n");
+
+        // Display current values for settings
+        if (selectedSetting == 0) {
+            printf(" > Page Size: %zu (D-Pad L/R: %zu, L/R buttons: %d)\n", pageSize, pageSizeStep, 100);
+        } else {
+            printf("   Page Size: %zu\n", pageSize);
+        }
+        if (selectedSetting == 1) {
+            printf(" > Text Color: DEFAULT (Not implemented yet)\n");
+        } else {
+            printf("   Text Color: DEFAULT\n");
+        }
+        
+        printf("\n\nUse D-Pad UP/DOWN. A to select.\n");
+        printf("D-Pad L/R for fine adjustment, L/R buttons for large adjustment.\n"); // Updated instructions
+        printf("B to go back.\n");
+
+        hidScanInput();
+        u32 kDown = hidKeysDown(); // For single key presses
+        // u32 kHeld = hidKeysHeld(); // For continuous adjustment, not used in this specific implementation
+
+        if (kDown & KEY_B) break; // Exit settings menu
+
+        if (kDown & (KEY_DOWN | KEY_CPAD_DOWN)) {
+            selectedSetting = (selectedSetting + 1) % numSettings;
+        }
+        if (kDown & (KEY_UP | KEY_CPAD_UP)) {
+            selectedSetting = (selectedSetting - 1 + numSettings) % numSettings;
+        }
+
+        // Handle L/R input for the selected setting
+        if (selectedSetting == 0) { // Page Size setting
+            // D-Pad Left / C-Pad Left for fine decrement
+            if (kDown & (KEY_DLEFT | KEY_CPAD_LEFT)) {
+                if (pageSize > minPageSize) {
+                    pageSize = max(minPageSize, pageSize - pageSizeStep);
+                }
+            }
+            // L button for large decrement
+            else if (kDown & KEY_L) { // Use else if to prioritize D-Pad if both are pressed
+                if (pageSize > minPageSize) {
+                    pageSize = max(minPageSize, pageSize - 100); // Larger step
+                }
+            }
+            
+            // D-Pad Right / C-Pad Right for fine increment
+            if (kDown & (KEY_DRIGHT | KEY_CPAD_RIGHT)) {
+                if (pageSize < maxPageSize) {
+                    pageSize = min(maxPageSize, pageSize + pageSizeStep);
+                }
+            }
+            // R button for large increment
+            else if (kDown & KEY_R) { // Use else if to prioritize D-Pad if both are pressed
+                if (pageSize < maxPageSize) {
+                    pageSize = min(maxPageSize, pageSize + 100); // Larger step
+                }
+            }
+        }
+        gspWaitForVBlank();
+    }
+}
+
 
 int main(int argc, char** argv) {
     gfxInitDefault();
@@ -518,8 +613,8 @@ int main(int argc, char** argv) {
     }
 
     int selected = 0;
-    drawList(ePubList, selected);
-    printf("\nUse D-Pad UP/DOWN. A to select. Start to exit.\n");
+    drawList(ePubList, selected); // This already contains consoleClear(), flush, swap
+    printf("\nUse D-Pad UP/DOWN. A to select. Start to exit. SELECT for Settings.\n"); // Updated instruction
 
     while (aptMainLoop()) {
         hidScanInput();
@@ -529,23 +624,39 @@ int main(int argc, char** argv) {
 
         if (kDown & (KEY_DOWN | KEY_CPAD_DOWN)) {
             selected = (selected + 1) % ePubList.size(); // Wrap around
-            drawList(ePubList, selected);
-            printf("\nUse D-Pad UP/DOWN. A to select. Start to exit.\n");
+            drawList(ePubList, selected); // drawList calls consoleClear, flush, swap
+            printf("\nUse D-Pad UP/DOWN. A to select. Start to exit. SELECT for Settings.\n");
         }
         if (kDown & (KEY_UP | KEY_CPAD_UP)) {
             selected = (selected - 1 + ePubList.size()) % ePubList.size(); // Safe wrap-around
-            drawList(ePubList, selected);
-            printf("\nUse D-Pad UP/DOWN. A to select. Start to exit.\n");
+            drawList(ePubList, selected); // drawList calls consoleClear, flush, swap
+            printf("\nUse D-Pad UP/DOWN. A to select. Start to exit. SELECT for Settings.\n");
         }
         if (kDown & KEY_A) {
             string path = "sdmc:/ebooks/" + ePubList[selected];
-            consoleClear();
-            // Call the new chapter menu function
+            consoleClear(); // Clear before displaying chapter
+            // Add explicit buffer management after clearing the console
+            gfxFlushBuffers();
+            gfxSwapBuffers();
+
+            // Call the chapter menu function
             displayChapterMenu(path.c_str()); 
+            // After returning from chapter menu, redraw the main ePub list
+            drawList(ePubList, selected); // drawList calls consoleClear, flush, swap
+            printf("\nUse D-Pad UP/DOWN. A to select. Start to exit. SELECT for Settings.\n");
 
         }
-        // Does nothing for now, will be made into a settings page. //
+        // Call the settings page when SELECT is pressed
         if (kDown & KEY_SELECT) {
+            consoleClear(); // Clear the main menu before entering settings
+            // Add explicit buffer management after clearing the console
+            gfxFlushBuffers();
+            gfxSwapBuffers();
+
+            displaySettingsMenu();
+            // After returning from settings, redraw the main ePub list
+            drawList(ePubList, selected); // drawList calls consoleClear, flush, swap
+            printf("\nUse D-Pad UP/DOWN. A to select. Start to exit. SELECT for Settings.\n");
             continue; 
         }
     }

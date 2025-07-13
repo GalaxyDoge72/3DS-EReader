@@ -11,6 +11,9 @@
 #include <algorithm>
 #include <sstream>
 #include <map>
+#include <sys/stat.h>
+#include <fstream>
+#include <stdexcept>
 
 using namespace std;
 using namespace tinyxml2;
@@ -18,9 +21,6 @@ using namespace tinyxml2;
 
 const int maxFileSize = 96 * 1048576; // Allocate 96 MB as maximum file size
 const size_t WORD_WRAP_WIDTH = 50; // Set word wrap width to 50 characters
-
-// Make pageSize a global, non-constant variable so it can be modified.
-size_t pageSize = 400; // Initial characters per page.
 
 // Define min/max for pageSize
 const size_t minPageSize = 200; // Minimum characters per page
@@ -90,6 +90,14 @@ string printColouredText(const string& input, Colour selectedColour) {
     return colourCode + input + "\x1b[0m";
 }
 
+struct AppSettings {
+    size_t pageSize;
+    Colour currentTextColor;
+};
+
+AppSettings currentSettings = {
+    .pageSize = 400, .currentTextColor = DEFAULT
+};
 
 bool DirExists(const char* path) {
     DIR* dir = opendir(path);
@@ -98,6 +106,81 @@ bool DirExists(const char* path) {
         return true;
     }
     return false;
+}
+
+bool settingsFileExists() {
+    const char* settingsPath = "sdmc:/settings/ereader/settings.inf";
+    FILE* file = fopen(settingsPath, "r");
+
+    if (file) {
+        fclose(file);
+        return true;
+    }
+    else {
+        return false;
+    }
+}
+
+bool createSettingsDirRecursive() {
+    if (!DirExists("sdmc:/settings")) {
+        if (mkdir("sdmc:/settings", 0777) != 0 && errno != EEXIST) return false;
+    }
+    if (!DirExists("sdmc:/settings/ereader")) {
+        if (mkdir("sdmc:/settings/ereader", 0777) != 0 && errno != EEXIST) return false;
+    }
+    return true;
+}
+
+void saveSettings(const AppSettings& settings) {
+    if (!createSettingsDirRecursive()) return;
+
+    FILE* file = fopen("sdmc:/settings/ereader/settings.inf", "w");
+    if (file) {
+        fprintf(file, "pageSize=%zu\n", settings.pageSize);
+        fprintf(file, "textColour=%s\n", getColourName(settings.currentTextColor).c_str());
+        fclose(file);
+    }
+}
+
+void loadSettings(AppSettings& settings) {
+    if (!settingsFileExists()) {
+        saveSettings(settings);
+        return;
+    }
+
+    ifstream file("sdmc:/settings/ereader/settings.inf");
+    string line;
+    if (file.is_open()) {
+        while (getline(file, line)){
+            string key;
+            string value;
+            size_t delimiterPos = line.find('=');
+
+            if (delimiterPos != string::npos) {
+                key = line.substr(0, delimiterPos);
+                value = line.substr(delimiterPos + 1);
+
+                if (key == "pageSize") {
+                    try {
+                        settings.pageSize = stoul(value);
+                        if (settings.pageSize < minPageSize) settings.pageSize = minPageSize;
+                        if (settings.pageSize > maxPageSize) settings.pageSize = maxPageSize;
+                    }
+                    catch (const exception& e) {
+                        settings.pageSize = 400;
+                    }
+                }
+                else if (key == "currentTextColor") {
+                    currentSettings.currentTextColor = getColourFromString(value);
+                }
+
+            }
+        }
+        file.close();
+    }
+    else {
+        printf("error loading settings fire");
+    }
 }
 
 void replace_all(std::string& s, const std::string& from, const std::string& to) {
@@ -170,6 +253,7 @@ vector<string> searchEPub(const string& epubPath) {
     return foundFiles;
 }
 
+
 // Consolidated drawing function for the main menu to prevent redundant code.
 void drawMainMenu(const vector<string>& files, int selectedIndex) {
     consoleClear();
@@ -186,15 +270,14 @@ void drawMainMenu(const vector<string>& files, int selectedIndex) {
 }
 
 
-vector<string> paginateFile(const string& fullText, size_t pageChars) {
+vector<string> paginateFile(const string& fullText, size_t pageSize) { // pageSize here is a parameter
     vector<string> pages;
-    if (fullText.empty()) return pages;
-    
     size_t pos = 0;
-    while (pos < fullText.length()) {
-        size_t len = min(pageChars, fullText.length() - pos);
-        pages.push_back(fullText.substr(pos, len));
-        pos += len;
+
+    while (pos < fullText.size()) {
+        size_t end = min(pageSize, fullText.size() - pos);
+        pages.push_back(fullText.substr(pos, end));
+        pos += end;
     }
     return pages;
 }
@@ -241,14 +324,17 @@ void extractText(XMLNode* node, string& output) {
 
 void displayPage(const vector<string>& pages, int currentPage) {
     consoleClear();
+
     if (currentPage >= 0 && currentPage < (int)pages.size()) {
-        // Apply coloring to the page content
-        printf("%s\n\n", printColouredText(pages[currentPage], currentTextColor).c_str());
-        printf("Page %d of %d\n", currentPage + 1, (int)pages.size());
-        printf("L/R: Prev/Next | B: Back\n");
-    } else {
-        printf("\x1b[31mInvalid Page Number!\x1b[0m\n");
+        printf("%s", printColouredText(pages[currentPage], currentTextColor).c_str());
+        printf("\x1b[29;1HPage %d of %d", currentPage + 1, (int)pages.size());
+        printf("\x1b[30;1HL/R: Prev/Next | B: Back");
+    } 
+    else {
+        printf("\x1b[31mInvalid Page Number!\x1b[0m");
     }
+
+    // Flush and swap the buffers to show the updated screen
     gfxFlushBuffers();
     gfxSwapBuffers();
 }
@@ -309,6 +395,7 @@ void readAndDisplayChapter(const char* epubPath, const char* chapterPath) {
     struct archive_entry* entry;
     string fullText;
     bool chapterFound = false;
+    
 
     while (archive_read_next_header(a, &entry) == ARCHIVE_OK) {
         if (strcmp(archive_entry_pathname(entry), chapterPath) == 0) {
@@ -340,8 +427,8 @@ void readAndDisplayChapter(const char* epubPath, const char* chapterPath) {
         return;
     }
 
-    fullText = wordWrap(fullText, WORD_WRAP_WIDTH);
-    vector<string> pages = paginateFile(fullText, pageSize);
+    fullText = wordWrap(fullText, WORD_WRAP_WIDTH); // Ensure WORD_WRAP_WIDTH is defined globally
+    vector<string> pages = paginateFile(fullText, currentSettings.pageSize); // Use the loaded pageSize
     int currentPage = 0;
     
     displayPage(pages, currentPage);
@@ -349,7 +436,10 @@ void readAndDisplayChapter(const char* epubPath, const char* chapterPath) {
         hidScanInput();
         u32 kdown = hidKeysDown();
 
-        if (kdown & KEY_B) break;
+        if (kdown & KEY_B) {
+            saveSettings(currentSettings); // Save settings when exiting chapter view
+            break;
+        }
         if ((kdown & KEY_L) && currentPage > 0) {
             currentPage--;
             displayPage(pages, currentPage);
@@ -358,15 +448,31 @@ void readAndDisplayChapter(const char* epubPath, const char* chapterPath) {
             currentPage++;
             displayPage(pages, currentPage);
         }
-        if (kdown & (KEY_UP | KEY_CPAD_UP)) { // Adjust page size
-             if (pageSize < maxPageSize) pageSize = min(maxPageSize, pageSize + pageSizeStep);
-             pages = paginateFile(fullText, pageSize);
-             displayPage(pages, currentPage);
+        
+        // Adjust page size using currentSettings.pageSize
+        if (kdown & (KEY_UP | KEY_CPAD_UP)) { // Adjust page size (increment)
+            if (currentSettings.pageSize < maxPageSize) {
+                currentSettings.pageSize = min(maxPageSize, currentSettings.pageSize + pageSizeStep);
+                pages = paginateFile(fullText, currentSettings.pageSize);
+                // Ensure currentPage is still valid after repaginating
+                if (currentPage >= (int)pages.size()) {
+                    currentPage = (int)pages.size() - 1;
+                    if (currentPage < 0) currentPage = 0; // Handle case where no pages exist
+                }
+                displayPage(pages, currentPage);
+            }
         }
-        if (kdown & (KEY_DOWN | KEY_CPAD_DOWN)) { // Adjust page size
-             if (pageSize > minPageSize) pageSize = max(minPageSize, pageSize - pageSizeStep);
-             pages = paginateFile(fullText, pageSize);
-             displayPage(pages, currentPage);
+        if (kdown & (KEY_DOWN | KEY_CPAD_DOWN)) { // Adjust page size (decrement)
+            if (currentSettings.pageSize > minPageSize) {
+                currentSettings.pageSize = max(minPageSize, currentSettings.pageSize - pageSizeStep);
+                pages = paginateFile(fullText, currentSettings.pageSize);
+                // Ensure currentPage is still valid after repaginating
+                if (currentPage >= (int)pages.size()) {
+                    currentPage = (int)pages.size() - 1;
+                    if (currentPage < 0) currentPage = 0;
+                }
+                displayPage(pages, currentPage);
+            }
         }
         
         gspWaitForVBlank();
@@ -443,33 +549,47 @@ void displayChapterMenu(const char* epubPath) {
         gspWaitForVBlank();
     }
 }
+
 void displaySettingsMenu() {
     int selectedSetting = 0;
     const int numSettings = 2;
     bool needsRedraw = true; // Flag to control drawing
 
     while (aptMainLoop()) {
-        // Only draw the menu when a setting changes
+        // Only draw the menu when something changes
         if (needsRedraw) {
             consoleClear();
             printf("--- Settings ---\n\n");
-            printf("%s Page Size: %zu\n", (selectedSetting == 0 ? ">" : " "), pageSize);
-            printf("%s Text Color: %s\n", (selectedSetting == 1 ? ">" : " "), getColourName(currentTextColor).c_str());
+
+            // Option 1: Page Size
+            printf("%s Page Size: %zu\n",
+                   (selectedSetting == 0 ? ">" : " "),
+                   currentSettings.pageSize);
+
+            // Option 2: Text Color
+            printf("%s Text Color: %s\n",
+                   (selectedSetting == 1 ? ">" : " "),
+                   getColourName(currentSettings.currentTextColor).c_str());
+
             printf("\n\nUse D-Pad UP/DOWN to select.\n");
             printf("Use D-Pad LEFT/RIGHT to change value.\n");
             printf("L/R buttons for large page size adjustment.\n");
-            printf("B to go back.\n");
+            printf("B to save and go back.\n");
+
             gfxFlushBuffers();
             gfxSwapBuffers();
-            needsRedraw = false; // Reset the flag
+            needsRedraw = false; // Reset the flag after drawing
         }
 
         hidScanInput();
         u32 kDown = hidKeysDown();
 
-        if (kDown & KEY_B) break;
+        if (kDown & KEY_B) {
+            saveSettings(currentSettings);
+            break;
+        }
 
-        // --- Input checks that trigger a redraw ---
+        // --- Navigation ---
         if (kDown & (KEY_DOWN | KEY_CPAD_DOWN)) {
             selectedSetting = (selectedSetting + 1) % numSettings;
             needsRedraw = true;
@@ -479,34 +599,37 @@ void displaySettingsMenu() {
             needsRedraw = true;
         }
 
+        // --- Value Changes ---
         if (selectedSetting == 0) { // Page Size
-            if ((kDown & (KEY_DLEFT | KEY_CPAD_LEFT)) && pageSize > minPageSize) {
-                pageSize = max(minPageSize, pageSize - pageSizeStep);
+            if ((kDown & (KEY_DLEFT | KEY_CPAD_LEFT)) && currentSettings.pageSize > minPageSize) {
+                currentSettings.pageSize = max(minPageSize, currentSettings.pageSize - pageSizeStep);
                 needsRedraw = true;
             }
-            if ((kDown & KEY_L) && pageSize > minPageSize) {
-                 pageSize = max(minPageSize, pageSize - largePageSizeStep);
-                 needsRedraw = true;
-            }
-            if ((kDown & (KEY_DRIGHT | KEY_CPAD_RIGHT)) && pageSize < maxPageSize) {
-                pageSize = min(maxPageSize, pageSize + pageSizeStep);
+            if ((kDown & KEY_L) && currentSettings.pageSize > minPageSize) {
+                currentSettings.pageSize = max(minPageSize, currentSettings.pageSize - largePageSizeStep);
                 needsRedraw = true;
             }
-            if ((kDown & KEY_R) && pageSize < maxPageSize) {
-                 pageSize = min(maxPageSize, pageSize + largePageSizeStep);
-                 needsRedraw = true;
+            if ((kDown & (KEY_DRIGHT | KEY_CPAD_RIGHT)) && currentSettings.pageSize < maxPageSize) {
+                currentSettings.pageSize = min(maxPageSize, currentSettings.pageSize + pageSizeStep);
+                needsRedraw = true;
+            }
+            if ((kDown & KEY_R) && currentSettings.pageSize < maxPageSize) {
+                currentSettings.pageSize = min(maxPageSize, currentSettings.pageSize + largePageSizeStep);
+                needsRedraw = true;
             }
         } else if (selectedSetting == 1) { // Text Color
             if (kDown & (KEY_DRIGHT | KEY_CPAD_RIGHT)) {
-                currentTextColor = (Colour)((currentTextColor + 1) % (CYAN + 1));
+                // Cycle forward through colors
+                currentSettings.currentTextColor = (Colour)((currentSettings.currentTextColor + 1) % (CYAN + 1));
                 needsRedraw = true;
             }
             if (kDown & (KEY_DLEFT | KEY_CPAD_LEFT)) {
-                currentTextColor = (Colour)((currentTextColor - 1 + (CYAN + 1)) % (CYAN + 1));
+                // Cycle backward through colors
+                currentSettings.currentTextColor = (Colour)((currentSettings.currentTextColor - 1 + (CYAN + 1)) % (CYAN + 1));
                 needsRedraw = true;
             }
         }
-        
+
         gspWaitForVBlank();
     }
 }
@@ -514,6 +637,8 @@ void displaySettingsMenu() {
 int main(int argc, char** argv) {
     gfxInitDefault();
     consoleInit(GFX_TOP, NULL);
+
+    loadSettings(currentSettings);
 
     const char* ebookDir = "sdmc:/ebooks";
 

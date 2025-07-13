@@ -16,25 +16,44 @@ using namespace std;
 using namespace tinyxml2;
 
 
-int maxFileSize = 96 * 1048576; // Allocate 96 MB as maximum file size //
+const int maxFileSize = 96 * 1048576; // Allocate 96 MB as maximum file size
+const size_t WORD_WRAP_WIDTH = 50; // Set word wrap width to 50 characters
 
 // Make pageSize a global, non-constant variable so it can be modified.
 size_t pageSize = 400; // Initial characters per page.
 
 // Define min/max for pageSize
 const size_t minPageSize = 200; // Minimum characters per page
-const size_t maxPageSize = 2000; // Maximum characters per page (adjust as needed based on screen fit)
+const size_t maxPageSize = 2000; // Maximum characters per page
 const size_t pageSizeStep = 50; // How much to increment/decrement by
+const size_t largePageSizeStep = 100; // Larger step for L/R buttons
 
 enum Colour {
-    RED, GREEN, YELLOW, BLUE, MAGENTA, CYAN, WHITE, DEFAULT, INVALID
+    DEFAULT, WHITE, RED, GREEN, YELLOW, BLUE, MAGENTA, CYAN, INVALID
 };
 
-// Return input string as lowercase
+// Global variable for the selected text color
+Colour currentTextColor = DEFAULT;
+
 string toLower(const string& input) {
     string output = input;
-    std::transform(output.begin(), output.end(), output.begin(), [](unsigned char c){ return std::tolower(c);});
+    transform(output.begin(), output.end(), output.begin(), [](unsigned char c){ return tolower(c); });
     return output;
+}
+
+// Function to get the string name of a color
+string getColourName(Colour colour) {
+    switch (colour) {
+        case RED: return "Red";
+        case GREEN: return "Green";
+        case YELLOW: return "Yellow";
+        case BLUE: return "Blue";
+        case MAGENTA: return "Magenta";
+        case CYAN: return "Cyan";
+        case WHITE: return "White";
+        case DEFAULT: return "Default";
+        default: return "Invalid";
+    }
 }
 
 Colour getColourFromString(const string& colourName) {
@@ -50,10 +69,8 @@ Colour getColourFromString(const string& colourName) {
     return INVALID;
 }
 
-string printColouredText(const string& input, const string& colour) {
-    Colour selectedColour = getColourFromString(colour);
+string printColouredText(const string& input, Colour selectedColour) {
     string colourCode;
-
     switch (selectedColour) {
         case RED: colourCode = "\x1b[31m"; break;
         case GREEN: colourCode = "\x1b[32m"; break;
@@ -63,14 +80,19 @@ string printColouredText(const string& input, const string& colour) {
         case CYAN: colourCode = "\x1b[36m"; break;
         case WHITE: colourCode = "\x1b[37m"; break;
         case DEFAULT:
-        case INVALID: colourCode = "\x1b[0m"; break;
+        case INVALID:
+        default:
+            colourCode = "\x1b[0m"; break;
     }
+    // For default, we don't need to wrap it, just return the input
+    if (selectedColour == DEFAULT) return input;
+    
     return colourCode + input + "\x1b[0m";
 }
 
-// Check if the /ebooks/ directory exists on the SD card
-bool DirExists() {
-    DIR* dir = opendir("sdmc:/ebooks");
+
+bool DirExists(const char* path) {
+    DIR* dir = opendir(path);
     if (dir) {
         closedir(dir);
         return true;
@@ -78,85 +100,60 @@ bool DirExists() {
     return false;
 }
 
-// Helper function for string replacement
 void replace_all(std::string& s, const std::string& from, const std::string& to) {
     if (from.empty()) return;
     size_t start_pos = 0;
     while((start_pos = s.find(from, start_pos)) != std::string::npos) {
         s.replace(start_pos, from.length(), to);
-        start_pos += to.length(); // Advance past the replaced text
+        start_pos += to.length();
     }
 }
 
-// Map for common HTML entities and direct problematic UTF-8 character replacements
 std::map<std::string, char> htmlEntities = {
     {"&apos;", '\''}, {"&#39;", '\''},
     {"&quot;", '\"'}, {"&#34;", '\"'},
     {"&amp;", '&'},
     {"&lt;", '<'},
     {"&gt;", '>'},
-    
-    // Smart quotes (often directly in UTF-8 or as entities)
-    {"&lsquo;", '\''}, {"&#x2018;", '\''}, // Left single quote
-    {"&rsquo;", '\''}, {"&#x2019;", '\''}, // Right single quote (apostrophe)
-    {"&ldquo;", '\"'}, {"&#x201C;", '\"'}, // Left double quote
-    {"&rdquo;", '\"'}, {"&#x201D;", '\"'}, // Right double quote
-
-    // Dashes
-    {"&mdash;", '-'}, {"&#x2014;", '-'}, // Em dash
-    {"&ndash;", '-'}, {"&#x2013;", '-'}, // En dash
-
-    // Ellipsis
-    {"&hellip;", '.'}, {"&#x2026;", '.'}, // Horizontal ellipsis
-
-    {"&nbsp;", ' '},  // Non-breaking space
-    {"&#xa0;", ' '},
+    {"&lsquo;", '\''}, {"&#x2018;", '\''},
+    {"&rsquo;", '\''}, {"&#x2019;", '\''},
+    {"&ldquo;", '\"'}, {"&#x201C;", '\"'},
+    {"&rdquo;", '\"'}, {"&#x201D;", '\"'},
+    {"&mdash;", '-'}, {"&#x2014;", '-'},
+    {"&ndash;", '-'}, {"&#x2013;", '-'},
+    {"&hellip;", '.'}, {"&#x2026;", '.'},
+    {"&nbsp;", ' '},  {"&#xa0;", ' '},
 };
 
-// Function to replace HTML entities and common problematic UTF-8 sequences with ASCII characters
 std::string decodeHtmlEntities(const std::string& input) {
     std::string output = input;
 
-    // First, handle named and numeric HTML entities
     for (const auto& pair : htmlEntities) {
-        size_t pos = output.find(pair.first);
-        while (pos != std::string::npos) {
-            output.replace(pos, pair.first.length(), 1, pair.second);
-            pos = output.find(pair.first, pos + 1);
-        }
+        replace_all(output, pair.first, string(1, pair.second));
     }
 
-    // Second, iterate through the string to replace known problematic multi-byte UTF-8 sequences
-    // that might not be HTML entities but are directly encoded.
-    // These specific byte sequences are common for typographic characters in UTF-8.
-    replace_all(output, "\xE2\x80\x99", "'"); // U+2019 RIGHT SINGLE QUOTATION MARK (smart apostrophe)
-    replace_all(output, "\xE2\x80\x98", "'"); // U+2018 LEFT SINGLE QUOTATION MARK
-    replace_all(output, "\xE2\x80\x9C", "\""); // U+201C LEFT DOUBLE QUOTATION MARK
-    replace_all(output, "\xE2\x80\x9D", "\""); // U+201D RIGHT DOUBLE QUOTATION MARK
-    replace_all(output, "\xE2\x80\xA6", "..."); // U+2026 HORIZONTAL ELLIPSIS
-    replace_all(output, "\xE2\x80\x93", "-"); // U+2013 EN DASH
-    replace_all(output, "\xE2\x80\x94", "-"); // U+2014 EM DASH
-    // Add other problematic UTF-8 sequences here if you identify more.
+    replace_all(output, "\xE2\x80\x99", "'");
+    replace_all(output, "\xE2\x80\x98", "'");
+    replace_all(output, "\xE2\x80\x9C", "\"");
+    replace_all(output, "\xE2\x80\x9D", "\"");
+    replace_all(output, "\xE2\x80\xA6", "...");
+    replace_all(output, "\xE2\x80\x93", "-");
+    replace_all(output, "\xE2\x80\x94", "-");
 
-    // Final cleanup: Replace any remaining non-ASCII printable characters with a space.
-    // This is a robust fallback for characters that are not explicitly handled above
-    // and might cause display issues on the 3DS console.
     std::string cleanedOutput;
     for (char c : output) {
-        // Keep standard ASCII printable characters (32-126) and common whitespace
         if ((static_cast<unsigned char>(c) >= 32 && static_cast<unsigned char>(c) <= 126) ||
             c == '\n' || c == '\r' || c == '\t') {
             cleanedOutput += c;
+        } else if (static_cast<unsigned char>(c) > 126) { // Replace non-ASCII chars
+            cleanedOutput += ' ';
         } else {
-            cleanedOutput += ' '; // Replace problematic characters with a space
+            cleanedOutput += c; // Keep other control chars like newline
         }
     }
-    output = cleanedOutput;
-
-    return output;
+    return cleanedOutput;
 }
 
-// Search for ePub books in the /ebooks/ directory
 vector<string> searchEPub(const string& epubPath) {
     vector<string> foundFiles;
     DIR* dir = opendir(epubPath.c_str());
@@ -164,7 +161,7 @@ vector<string> searchEPub(const string& epubPath) {
         struct dirent* entry;
         while ((entry = readdir(dir)) != nullptr) {
             string name = entry->d_name;
-            if (name.size() > 5 && name.substr(name.size() - 5) == ".epub") {
+            if (name.length() > 5 && name.substr(name.length() - 5) == ".epub") {
                 foundFiles.push_back(name);
             }
         }
@@ -173,76 +170,55 @@ vector<string> searchEPub(const string& epubPath) {
     return foundFiles;
 }
 
-void drawList(const vector<string>& files, int selectedIndex) {
+// Consolidated drawing function for the main menu to prevent redundant code.
+void drawMainMenu(const vector<string>& files, int selectedIndex) {
     consoleClear();
-    // Add explicit buffer management after clearing the console
-    gfxFlushBuffers();
-    gfxSwapBuffers();
-
     printf("Select an ePub:\n\n");
     for (size_t i = 0; i < files.size(); i++) {
         if ((int)i == selectedIndex) {
             printf(" > %s\n", files[i].c_str());
-        }
-        else {
+        } else {
             printf("   %s\n", files[i].c_str());
         }
     }
+    printf("\nUse D-Pad UP/DOWN to navigate.\n");
+    printf("A: Select | START: Exit | SELECT: Settings\n");
 }
 
-vector<string> paginateFile(const string& fullText, size_t pageSize) {
-    vector<string> pages;
-    size_t pos = 0;
 
-    while (pos < fullText.size()) {
-        size_t end = min(pageSize, fullText.size() - pos);
-        pages.push_back(fullText.substr(pos, end));
-        pos += end;
+vector<string> paginateFile(const string& fullText, size_t pageChars) {
+    vector<string> pages;
+    if (fullText.empty()) return pages;
+    
+    size_t pos = 0;
+    while (pos < fullText.length()) {
+        size_t len = min(pageChars, fullText.length() - pos);
+        pages.push_back(fullText.substr(pos, len));
+        pos += len;
     }
     return pages;
 }
 
-// Recursively extract readable text from XML nodes
 void extractText(XMLNode* node, string& output) {
     if (!node) return;
 
-    XMLElement* elem = node->ToElement();
-    string tag = "";
-
-    if (elem) {
-        tag = toLower(elem->Name());
-
-        // Skip unwanted tags
+    if (XMLElement* elem = node->ToElement()) {
+        string tag = toLower(elem->Name());
         if (tag == "script" || tag == "style") return;
 
-        // Add a newline before certain block tags, ensuring no double newlines
-        if (tag == "p" || tag == "div" || tag == "blockquote" ||
-            tag == "h1" || tag == "h2" || tag == "h3" || tag == "h4" || tag == "h5" || tag == "h6") {
-            if (!output.empty() && output.back() != '\n') {
-                output += "\n";
-            }
+        if (tag == "p" || tag == "div" || tag == "h1" || tag == "h2" || tag == "h3") {
+            if (!output.empty() && output.back() != '\n') output += "\n";
         }
-        if (tag == "br") { // <br> always means a newline
-            output += "\n";
-        }
-
-        // Discard italic/bold formatting: no special characters added for 'em' or 'i' tags.
-        // The text content within these tags will still be extracted.
+        if (tag == "br") output += "\n";
     }
 
-    if (node->ToText()) {
-        string textValue = node->ToText()->Value();
-        // Trim leading/trailing whitespace from text nodes to avoid excessive spaces
+    if (XMLText* text = node->ToText()) {
+        string textValue = text->Value();
         size_t first = textValue.find_first_not_of(" \t\n\r");
-        size_t last = textValue.find_last_not_of(" \t\n\r");
-        if (string::npos == first) { // Empty or all whitespace
-            textValue = "";
-        } else {
+        if (string::npos != first) {
+            size_t last = textValue.find_last_not_of(" \t\n\r");
             textValue = textValue.substr(first, (last - first + 1));
-        }
-
-        if (!textValue.empty()) {
-            // Add a space before text if the previous char wasn't a space or newline
+            
             if (!output.empty() && output.back() != ' ' && output.back() != '\n') {
                 output += " ";
             }
@@ -254,103 +230,47 @@ void extractText(XMLNode* node, string& output) {
         extractText(child, output);
     }
 
-    // Add newline after block tags to separate paragraphs, ensuring no double newlines
-    if (elem) {
-        if (tag == "p" || tag == "div" || tag == "blockquote" ||
-            tag == "h1" || tag == "h2" || tag == "h3" || tag == "h4" || tag == "h5" || tag == "h6") {
-            if (!output.empty() && output.back() != '\n') {
-                 output += "\n";
-            }
+    if (XMLElement* elem = node->ToElement()) {
+        string tag = toLower(elem->Name());
+        if (tag == "p" || tag == "div" || tag == "h1" || tag == "h2" || tag == "h3") {
+            if (!output.empty() && output.back() != '\n') output += "\n";
         }
-        // No closing characters for italic/bold.
     }
 }
-
 
 
 void displayPage(const vector<string>& pages, int currentPage) {
     consoleClear();
-    // Add explicit buffer management after clearing the console
+    if (currentPage >= 0 && currentPage < (int)pages.size()) {
+        // Apply coloring to the page content
+        printf("%s\n\n", printColouredText(pages[currentPage], currentTextColor).c_str());
+        printf("Page %d of %d\n", currentPage + 1, (int)pages.size());
+        printf("L/R: Prev/Next | B: Back\n");
+    } else {
+        printf("\x1b[31mInvalid Page Number!\x1b[0m\n");
+    }
     gfxFlushBuffers();
     gfxSwapBuffers();
-
-    if (currentPage >= 0 && currentPage < (int)pages.size()) {
-        printf("%s\n\n", pages[currentPage].c_str());
-        printf("Page %d of %d\n", currentPage + 1, (int)pages.size());
-        printf("L: Prev | R: Next | B: Back\n");
-    }
-    else {
-        printf("%s", printColouredText("Invalid Page Number!", "red").c_str());
-    }
-}
-
-bool willExceedRAM(struct archive_entry* entry) {
-    // Just going to assume that we always pass a valid file //
-    int64_t epubSize = archive_entry_size(entry);
-    if (epubSize > maxFileSize) {
-        return true;
-    }
-    else {
-        return false;
-    }
-
-}
-
-vector<string> splitLines(const string& text) {
-    vector<string> lines;
-    std::stringstream ss(text);
-    string line;
-    while (std::getline(ss, line)) {
-        lines.push_back(line);
-    }
-    return lines;
 }
 
 string wordWrap(const string& input, size_t maxWidth) {
-    string wrappedText;
-    size_t currentPos = 0;
-    size_t len = input.length();
-
-    while (currentPos < len) {
-        // Find the end of the next segment, respecting existing newlines
-        size_t nextNewline = input.find('\n', currentPos);
-        size_t endOfSegment = (nextNewline == string::npos) ? len : nextNewline;
-        
-        // Process the segment before the next newline
-        string segment = input.substr(currentPos, endOfSegment - currentPos);
-        size_t segmentPos = 0;
-        size_t segmentLen = segment.length();
-
-        while (segmentPos < segmentLen) {
-            size_t endPos = min(segmentPos + maxWidth, segmentLen);
-            
-            if (endPos < segmentLen) {
-                size_t wrapPos = segment.rfind(' ', endPos);
-                if (wrapPos != string::npos && wrapPos > segmentPos) {
-                    wrappedText += segment.substr(segmentPos, wrapPos - segmentPos);
-                    wrappedText += "\n";
-                    segmentPos = wrapPos + 1; // Move past the space
-                } else {
-                    // No suitable space found, wrap at maxWidth
-                    wrappedText += segment.substr(segmentPos, maxWidth);
-                    wrappedText += "\n";
-                    segmentPos += maxWidth;
-                }
-            } else {
-                wrappedText += segment.substr(segmentPos);
-                segmentPos = segmentLen;
+    stringstream ss(input);
+    string line, wrappedText;
+    
+    while (getline(ss, line, '\n')) {
+        string currentLine;
+        stringstream words(line);
+        string word;
+        while (words >> word) {
+            if (currentLine.length() + word.length() + 1 > maxWidth) {
+                wrappedText += currentLine + "\n";
+                currentLine = "";
             }
+            if (!currentLine.empty()) currentLine += " ";
+            currentLine += word;
         }
-        
-        // If there was a newline, add it to the output and move past it
-        if (nextNewline != string::npos) {
-            wrappedText += "\n";
-            currentPos = nextNewline + 1;
-        } else {
-            currentPos = len;
-        }
+        wrappedText += currentLine + "\n";
     }
-
     return wrappedText;
 }
 
@@ -361,7 +281,7 @@ vector<string> getChapterList(const char* epubPath) {
 
     if (archive_read_open_filename(a, epubPath, 10240) != ARCHIVE_OK) {
         archive_read_free(a);
-        return chapters; // Return empty vector on failure
+        return chapters;
     }
 
     struct archive_entry* entry;
@@ -372,7 +292,6 @@ vector<string> getChapterList(const char* epubPath) {
         }
         archive_read_data_skip(a);
     }
-
     archive_read_free(a);
     return chapters;
 }
@@ -392,30 +311,27 @@ void readAndDisplayChapter(const char* epubPath, const char* chapterPath) {
     bool chapterFound = false;
 
     while (archive_read_next_header(a, &entry) == ARCHIVE_OK) {
-        // Find the specific chapter file we want to read
         if (strcmp(archive_entry_pathname(entry), chapterPath) == 0) {
-        chapterFound = true;
-        char buffer[1024];
-        string fileContent;
-        ssize_t size;
+            chapterFound = true;
+            char buffer[4096];
+            string fileContent;
+            ssize_t size;
 
-        while ((size = archive_read_data(a, buffer, sizeof(buffer))) > 0) {
-            fileContent.append(buffer, size);
+            while ((size = archive_read_data(a, buffer, sizeof(buffer))) > 0) {
+                fileContent.append(buffer, size);
+            }
+
+            fileContent = decodeHtmlEntities(fileContent);
+
+            XMLDocument doc;
+            if (doc.Parse(fileContent.c_str()) == XML_SUCCESS) {
+                if (XMLElement* body = doc.FirstChildElement("html")->FirstChildElement("body")) {
+                    extractText(body, fullText);
+                }
+            }
+            break;
         }
-
-        // Apply HTML entity decoding and problematic UTF-8 character conversion here
-        fileContent = decodeHtmlEntities(fileContent);
-
-        XMLDocument doc;
-        if (doc.Parse(fileContent.c_str()) == XML_SUCCESS) {
-            XMLElement* body = doc.FirstChildElement("html");
-            if (body) body = body->FirstChildElement("body");
-            if (body) extractText(body, fullText);
-        }
-        break;
-    } else {
         archive_read_data_skip(a);
-    }
     }
     archive_read_free(a);
 
@@ -424,11 +340,10 @@ void readAndDisplayChapter(const char* epubPath, const char* chapterPath) {
         return;
     }
 
-    fullText = wordWrap(fullText, 50); // Word wrap to 50 characters per line
-    vector<string> pages = paginateFile(fullText, pageSize); // Use the global pageSize
+    fullText = wordWrap(fullText, WORD_WRAP_WIDTH);
+    vector<string> pages = paginateFile(fullText, pageSize);
     int currentPage = 0;
     
-    // This display loop remains the same
     displayPage(pages, currentPage);
     while (aptMainLoop()) {
         hidScanInput();
@@ -443,21 +358,52 @@ void readAndDisplayChapter(const char* epubPath, const char* chapterPath) {
             currentPage++;
             displayPage(pages, currentPage);
         }
+        if (kdown & (KEY_UP | KEY_CPAD_UP)) { // Adjust page size
+             if (pageSize < maxPageSize) pageSize = min(maxPageSize, pageSize + pageSizeStep);
+             pages = paginateFile(fullText, pageSize);
+             displayPage(pages, currentPage);
+        }
+        if (kdown & (KEY_DOWN | KEY_CPAD_DOWN)) { // Adjust page size
+             if (pageSize > minPageSize) pageSize = max(minPageSize, pageSize - pageSizeStep);
+             pages = paginateFile(fullText, pageSize);
+             displayPage(pages, currentPage);
+        }
+        
         gspWaitForVBlank();
     }
 }
+
+void drawChapterList(const vector<string>& files, int selectedIndex) {
+    consoleClear();
+    printf("Select a chapter:\n\n");
+    for (size_t i = 0; i < files.size(); i++) {
+        string displayName = files[i];
+        size_t lastSlash = displayName.find_last_of('/');
+        if(lastSlash != string::npos) {
+            displayName = displayName.substr(lastSlash + 1);
+        }
+
+        if ((int)i == selectedIndex) {
+            printf(" > %s\n", displayName.c_str());
+        } else {
+            printf("   %s\n", displayName.c_str());
+        }
+    }
+    printf("\nUse D-Pad UP/DOWN to navigate. A to select. B to go back.\n");
+    gfxFlushBuffers();
+    gfxSwapBuffers();
+}
+
 
 void displayChapterMenu(const char* epubPath) {
     vector<string> chapterList = getChapterList(epubPath);
 
     if (chapterList.empty()) {
         consoleClear();
-        // Add explicit buffer management after clearing the console
+        printf("No chapters (.xhtml or .html files) found in this EPUB.\n");
+        printf("\nPress B to return.\n");
         gfxFlushBuffers();
         gfxSwapBuffers();
-
-        printf("No chapters (.xhtml files) found in this EPUB.\n");
-        printf("\nPress B to return.\n");
         while (aptMainLoop()) {
             hidScanInput();
             if (hidKeysDown() & KEY_B) break;
@@ -467,142 +413,129 @@ void displayChapterMenu(const char* epubPath) {
     }
 
     int selected = 0;
+    bool needsRedraw = true; // Flag to control drawing
 
     while (aptMainLoop()) {
-        drawList(chapterList, selected); // drawList calls consoleClear, flush, swap
-        printf("\nSelect a chapter:\n");
-        printf("Use D-Pad UP/DOWN. A to select. B to go back.\n");
+        // Only draw the menu when the selection changes or we return from the reader
+        if (needsRedraw) {
+            drawChapterList(chapterList, selected);
+            needsRedraw = false; // Reset the flag after drawing
+        }
 
         hidScanInput();
         u32 kDown = hidKeysDown();
 
-        if (kDown & KEY_B) break; // Go back to main book list
+        if (kDown & KEY_B) break;
 
         if (kDown & (KEY_DOWN | KEY_CPAD_DOWN)) {
             selected = (selected + 1) % chapterList.size();
+            needsRedraw = true; // Flag for redraw
         }
         if (kDown & (KEY_UP | KEY_CPAD_UP)) {
             selected = (selected - 1 + chapterList.size()) % chapterList.size();
+            needsRedraw = true; // Flag for redraw
         }
         if (kDown & KEY_A) {
-            string chapterPath = chapterList[selected];
-            consoleClear(); // Clear before displaying chapter
-            // Add explicit buffer management after clearing the console
-            gfxFlushBuffers();
-            gfxSwapBuffers();
-
-            // Call the function to read and display only the selected chapter
-            readAndDisplayChapter(epubPath, chapterPath.c_str()); 
-
+            readAndDisplayChapter(epubPath, chapterList[selected].c_str());
+            needsRedraw = true; // After returning from the reader, redraw the menu
         }
 
         gspWaitForVBlank();
-        // consoleClear(); // This was here before, but drawList already clears at start of loop
     }
 }
-
-// Function to display the settings menu
 void displaySettingsMenu() {
-    consoleClear();
     int selectedSetting = 0;
-    const int numSettings = 2; // Page Size, Text Color
-    string settingsOptions[numSettings] = {"Page Size", "Text Color"};
+    const int numSettings = 2;
+    bool needsRedraw = true; // Flag to control drawing
 
     while (aptMainLoop()) {
-        consoleClear();
-        // Add explicit buffer management after clearing the console
-        // This might help ensure the clear is fully rendered before new text is drawn
-        gfxFlushBuffers();
-        gfxSwapBuffers();
-
-        printf("--- Settings ---\n\n");
-
-        // Display current values for settings
-        if (selectedSetting == 0) {
-            printf(" > Page Size: %zu (D-Pad L/R: %zu, L/R buttons: %d)\n", pageSize, pageSizeStep, 100);
-        } else {
-            printf("   Page Size: %zu\n", pageSize);
+        // Only draw the menu when a setting changes
+        if (needsRedraw) {
+            consoleClear();
+            printf("--- Settings ---\n\n");
+            printf("%s Page Size: %zu\n", (selectedSetting == 0 ? ">" : " "), pageSize);
+            printf("%s Text Color: %s\n", (selectedSetting == 1 ? ">" : " "), getColourName(currentTextColor).c_str());
+            printf("\n\nUse D-Pad UP/DOWN to select.\n");
+            printf("Use D-Pad LEFT/RIGHT to change value.\n");
+            printf("L/R buttons for large page size adjustment.\n");
+            printf("B to go back.\n");
+            gfxFlushBuffers();
+            gfxSwapBuffers();
+            needsRedraw = false; // Reset the flag
         }
-        if (selectedSetting == 1) {
-            printf(" > Text Color: DEFAULT (Not implemented yet)\n");
-        } else {
-            printf("   Text Color: DEFAULT\n");
-        }
-        
-        printf("\n\nUse D-Pad UP/DOWN. A to select.\n");
-        printf("D-Pad L/R for fine adjustment, L/R buttons for large adjustment.\n"); // Updated instructions
-        printf("B to go back.\n");
 
         hidScanInput();
-        u32 kDown = hidKeysDown(); // For single key presses
-        // u32 kHeld = hidKeysHeld(); // For continuous adjustment, not used in this specific implementation
+        u32 kDown = hidKeysDown();
 
-        if (kDown & KEY_B) break; // Exit settings menu
+        if (kDown & KEY_B) break;
 
+        // --- Input checks that trigger a redraw ---
         if (kDown & (KEY_DOWN | KEY_CPAD_DOWN)) {
             selectedSetting = (selectedSetting + 1) % numSettings;
+            needsRedraw = true;
         }
         if (kDown & (KEY_UP | KEY_CPAD_UP)) {
             selectedSetting = (selectedSetting - 1 + numSettings) % numSettings;
+            needsRedraw = true;
         }
 
-        // Handle L/R input for the selected setting
-        if (selectedSetting == 0) { // Page Size setting
-            // D-Pad Left / C-Pad Left for fine decrement
-            if (kDown & (KEY_DLEFT | KEY_CPAD_LEFT)) {
-                if (pageSize > minPageSize) {
-                    pageSize = max(minPageSize, pageSize - pageSizeStep);
-                }
+        if (selectedSetting == 0) { // Page Size
+            if ((kDown & (KEY_DLEFT | KEY_CPAD_LEFT)) && pageSize > minPageSize) {
+                pageSize = max(minPageSize, pageSize - pageSizeStep);
+                needsRedraw = true;
             }
-            // L button for large decrement
-            else if (kDown & KEY_L) { // Use else if to prioritize D-Pad if both are pressed
-                if (pageSize > minPageSize) {
-                    pageSize = max(minPageSize, pageSize - 100); // Larger step
-                }
+            if ((kDown & KEY_L) && pageSize > minPageSize) {
+                 pageSize = max(minPageSize, pageSize - largePageSizeStep);
+                 needsRedraw = true;
             }
-            
-            // D-Pad Right / C-Pad Right for fine increment
+            if ((kDown & (KEY_DRIGHT | KEY_CPAD_RIGHT)) && pageSize < maxPageSize) {
+                pageSize = min(maxPageSize, pageSize + pageSizeStep);
+                needsRedraw = true;
+            }
+            if ((kDown & KEY_R) && pageSize < maxPageSize) {
+                 pageSize = min(maxPageSize, pageSize + largePageSizeStep);
+                 needsRedraw = true;
+            }
+        } else if (selectedSetting == 1) { // Text Color
             if (kDown & (KEY_DRIGHT | KEY_CPAD_RIGHT)) {
-                if (pageSize < maxPageSize) {
-                    pageSize = min(maxPageSize, pageSize + pageSizeStep);
-                }
+                currentTextColor = (Colour)((currentTextColor + 1) % (CYAN + 1));
+                needsRedraw = true;
             }
-            // R button for large increment
-            else if (kDown & KEY_R) { // Use else if to prioritize D-Pad if both are pressed
-                if (pageSize < maxPageSize) {
-                    pageSize = min(maxPageSize, pageSize + 100); // Larger step
-                }
+            if (kDown & (KEY_DLEFT | KEY_CPAD_LEFT)) {
+                currentTextColor = (Colour)((currentTextColor - 1 + (CYAN + 1)) % (CYAN + 1));
+                needsRedraw = true;
             }
         }
+        
         gspWaitForVBlank();
     }
 }
-
 
 int main(int argc, char** argv) {
     gfxInitDefault();
     consoleInit(GFX_TOP, NULL);
 
-    if (!DirExists()) {
-        consoleClear();
-        printf("The path 'sdmc:/ebooks' was not found.\nEnsure that you have created a folder named 'ebooks' in the ROOT OF YOUR SD CARD.");
-        printf("\nPress any key to exit.\n");
+    const char* ebookDir = "sdmc:/ebooks";
 
+    if (!DirExists(ebookDir)) {
+        consoleClear();
+        printf("Directory '%s' not found.\n", ebookDir);
+        printf("Please create an 'ebooks' folder on the root of your SD card.\n");
+        printf("\nPress START to exit.\n");
         while (aptMainLoop()) {
             hidScanInput();
-            if (hidKeysDown()) break; // End the program once the user presses buttons
+            if (hidKeysDown() & KEY_START) break;
             gspWaitForVBlank();
         }
-
         gfxExit();
         return 0;
     }
 
-    vector<string> ePubList = searchEPub("sdmc:/ebooks");
+    vector<string> ePubList = searchEPub(ebookDir);
     if (ePubList.empty()) {
         consoleClear();
-        printf("No .epub files were found.\n");
-        printf("\nPress Start to exit.\n");
+        printf("No .epub files found in '%s'.\n", ebookDir);
+        printf("\nPress START to exit.\n");
         while (aptMainLoop()) {
             hidScanInput();
             if (hidKeysDown() & KEY_START) break;
@@ -613,52 +546,45 @@ int main(int argc, char** argv) {
     }
 
     int selected = 0;
-    drawList(ePubList, selected); // This already contains consoleClear(), flush, swap
-    printf("\nUse D-Pad UP/DOWN. A to select. Start to exit. SELECT for Settings.\n"); // Updated instruction
+    
+    // Initial draw of the main menu
+    drawMainMenu(ePubList, selected);
+    gfxFlushBuffers();
+    gfxSwapBuffers();
 
     while (aptMainLoop()) {
         hidScanInput();
         u32 kDown = hidKeysDown();
 
+        bool needsRedraw = false;
+
         if (kDown & KEY_START) break;
 
         if (kDown & (KEY_DOWN | KEY_CPAD_DOWN)) {
-            selected = (selected + 1) % ePubList.size(); // Wrap around
-            drawList(ePubList, selected); // drawList calls consoleClear, flush, swap
-            printf("\nUse D-Pad UP/DOWN. A to select. Start to exit. SELECT for Settings.\n");
+            selected = (selected + 1) % ePubList.size();
+            needsRedraw = true;
         }
         if (kDown & (KEY_UP | KEY_CPAD_UP)) {
-            selected = (selected - 1 + ePubList.size()) % ePubList.size(); // Safe wrap-around
-            drawList(ePubList, selected); // drawList calls consoleClear, flush, swap
-            printf("\nUse D-Pad UP/DOWN. A to select. Start to exit. SELECT for Settings.\n");
+            selected = (selected - 1 + ePubList.size()) % ePubList.size();
+            needsRedraw = true;
         }
         if (kDown & KEY_A) {
-            string path = "sdmc:/ebooks/" + ePubList[selected];
-            consoleClear(); // Clear before displaying chapter
-            // Add explicit buffer management after clearing the console
-            gfxFlushBuffers();
-            gfxSwapBuffers();
-
-            // Call the chapter menu function
-            displayChapterMenu(path.c_str()); 
-            // After returning from chapter menu, redraw the main ePub list
-            drawList(ePubList, selected); // drawList calls consoleClear, flush, swap
-            printf("\nUse D-Pad UP/DOWN. A to select. Start to exit. SELECT for Settings.\n");
-
+            string path = string(ebookDir) + "/" + ePubList[selected];
+            displayChapterMenu(path.c_str());
+            needsRedraw = true; 
         }
-        // Call the settings page when SELECT is pressed
         if (kDown & KEY_SELECT) {
-            consoleClear(); // Clear the main menu before entering settings
-            // Add explicit buffer management after clearing the console
+            displaySettingsMenu();
+            needsRedraw = true;
+        }
+
+        if (needsRedraw) {
+            drawMainMenu(ePubList, selected);
             gfxFlushBuffers();
             gfxSwapBuffers();
-
-            displaySettingsMenu();
-            // After returning from settings, redraw the main ePub list
-            drawList(ePubList, selected); // drawList calls consoleClear, flush, swap
-            printf("\nUse D-Pad UP/DOWN. A to select. Start to exit. SELECT for Settings.\n");
-            continue; 
         }
+        
+        gspWaitForVBlank();
     }
 
     gfxExit();

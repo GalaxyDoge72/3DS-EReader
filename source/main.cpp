@@ -86,7 +86,7 @@ string printColouredText(const string& input, Colour selectedColour) {
     }
     // For default, we don't need to wrap it, just return the input
     if (selectedColour == DEFAULT) return input;
-    
+
     return colourCode + input + "\x1b[0m";
 }
 
@@ -237,40 +237,38 @@ std::string decodeHtmlEntities(const std::string& input) {
     return cleanedOutput;
 }
 
-vector<string> searchEPub(const string& epubPath) {
-    vector<string> foundFiles;
-    DIR* dir = opendir(epubPath.c_str());
-    if (dir) {
-        struct dirent* entry;
-        while ((entry = readdir(dir)) != nullptr) {
-            string name = entry->d_name;
-            if (name.length() > 5 && name.substr(name.length() - 5) == ".epub") {
-                foundFiles.push_back(name);
+void recursiveSearchEPub(const std::string& basePath, std::map<std::string, std::vector<std::string>>& epubFilesByDir) {
+    DIR* dir = opendir(basePath.c_str());
+    if (!dir) {
+        return;
+    }
+
+    struct dirent* entry;
+    while ((entry = readdir(dir)) != nullptr) {
+        std::string name = entry->d_name;
+        if (name == "." || name == "..") {
+            continue;
+        }
+
+        std::string fullPath = basePath + "/" + name;
+        struct stat s;
+        if (stat(fullPath.c_str(), &s) == 0) {
+            if (S_ISDIR(s.st_mode)) {
+                // It's a directory, so recurse into it
+                recursiveSearchEPub(fullPath, epubFilesByDir);
+            } else if (S_ISREG(s.st_mode)) {
+                // It's a regular file, check if it's an .epub
+                if (name.length() > 5 && name.substr(name.length() - 5) == ".epub") {
+                    epubFilesByDir[basePath].push_back(name);
+                }
             }
         }
-        closedir(dir);
     }
-    return foundFiles;
+    closedir(dir);
 }
 
 
-// Consolidated drawing function for the main menu to prevent redundant code.
-void drawMainMenu(const vector<string>& files, int selectedIndex) {
-    consoleClear();
-    printf("Select an ePub:\n\n");
-    for (size_t i = 0; i < files.size(); i++) {
-        if ((int)i == selectedIndex) {
-            printf(" > %s\n", files[i].c_str());
-        } else {
-            printf("   %s\n", files[i].c_str());
-        }
-    }
-    printf("\nUse D-Pad UP/DOWN to navigate.\n");
-    printf("A: Select | START: Exit | SELECT: Settings\n");
-}
-
-
-vector<string> paginateFile(const string& fullText, size_t pageSize) { // pageSize here is a parameter
+vector<string> paginateFile(const string& fullText, size_t pageSize) {
     vector<string> pages;
     size_t pos = 0;
 
@@ -329,12 +327,11 @@ void displayPage(const vector<string>& pages, int currentPage) {
         printf("%s", printColouredText(pages[currentPage], currentTextColor).c_str());
         printf("\x1b[29;1HPage %d of %d", currentPage + 1, (int)pages.size());
         printf("\x1b[30;1HL/R: Prev/Next | B: Back");
-    } 
+    }
     else {
         printf("\x1b[31mInvalid Page Number!\x1b[0m");
     }
 
-    // Flush and swap the buffers to show the updated screen
     gfxFlushBuffers();
     gfxSwapBuffers();
 }
@@ -342,7 +339,7 @@ void displayPage(const vector<string>& pages, int currentPage) {
 string wordWrap(const string& input, size_t maxWidth) {
     stringstream ss(input);
     string line, wrappedText;
-    
+
     while (getline(ss, line, '\n')) {
         string currentLine;
         stringstream words(line);
@@ -379,129 +376,16 @@ vector<string> getChapterList(const char* epubPath) {
         archive_read_data_skip(a);
     }
     archive_read_free(a);
+
+    // Sort the chapters alphabetically to ensure numerical order
+    std::sort(chapters.begin(), chapters.end());
+    
     return chapters;
 }
 
-void readAndDisplayChapter(const char* epubPath, const char* chapterPath) {
-    struct archive* a = archive_read_new();
-    archive_read_support_format_zip(a);
 
-    if (archive_read_open_filename(a, epubPath, 10240) != ARCHIVE_OK) {
-        printf("Failed to open EPUB: %s\n", archive_error_string(a));
-        archive_read_free(a);
-        return;
-    }
-
-    struct archive_entry* entry;
-    string fullText;
-    bool chapterFound = false;
-    
-
-    while (archive_read_next_header(a, &entry) == ARCHIVE_OK) {
-        if (strcmp(archive_entry_pathname(entry), chapterPath) == 0) {
-            chapterFound = true;
-            char buffer[4096];
-            string fileContent;
-            ssize_t size;
-
-            while ((size = archive_read_data(a, buffer, sizeof(buffer))) > 0) {
-                fileContent.append(buffer, size);
-            }
-
-            fileContent = decodeHtmlEntities(fileContent);
-
-            XMLDocument doc;
-            if (doc.Parse(fileContent.c_str()) == XML_SUCCESS) {
-                if (XMLElement* body = doc.FirstChildElement("html")->FirstChildElement("body")) {
-                    extractText(body, fullText);
-                }
-            }
-            break;
-        }
-        archive_read_data_skip(a);
-    }
-    archive_read_free(a);
-
-    if (!chapterFound) {
-        printf("Could not find chapter: %s\n", chapterPath);
-        return;
-    }
-
-    fullText = wordWrap(fullText, WORD_WRAP_WIDTH); // Ensure WORD_WRAP_WIDTH is defined globally
-    vector<string> pages = paginateFile(fullText, currentSettings.pageSize); // Use the loaded pageSize
-    int currentPage = 0;
-    
-    displayPage(pages, currentPage);
-    while (aptMainLoop()) {
-        hidScanInput();
-        u32 kdown = hidKeysDown();
-
-        if (kdown & KEY_B) {
-            saveSettings(currentSettings); // Save settings when exiting chapter view
-            break;
-        }
-        if ((kdown & KEY_L) && currentPage > 0) {
-            currentPage--;
-            displayPage(pages, currentPage);
-        }
-        if ((kdown & KEY_R) && currentPage < (int)pages.size() - 1) {
-            currentPage++;
-            displayPage(pages, currentPage);
-        }
-        
-        // Adjust page size using currentSettings.pageSize
-        if (kdown & (KEY_UP | KEY_CPAD_UP)) { // Adjust page size (increment)
-            if (currentSettings.pageSize < maxPageSize) {
-                currentSettings.pageSize = min(maxPageSize, currentSettings.pageSize + pageSizeStep);
-                pages = paginateFile(fullText, currentSettings.pageSize);
-                // Ensure currentPage is still valid after repaginating
-                if (currentPage >= (int)pages.size()) {
-                    currentPage = (int)pages.size() - 1;
-                    if (currentPage < 0) currentPage = 0; // Handle case where no pages exist
-                }
-                displayPage(pages, currentPage);
-            }
-        }
-        if (kdown & (KEY_DOWN | KEY_CPAD_DOWN)) { // Adjust page size (decrement)
-            if (currentSettings.pageSize > minPageSize) {
-                currentSettings.pageSize = max(minPageSize, currentSettings.pageSize - pageSizeStep);
-                pages = paginateFile(fullText, currentSettings.pageSize);
-                // Ensure currentPage is still valid after repaginating
-                if (currentPage >= (int)pages.size()) {
-                    currentPage = (int)pages.size() - 1;
-                    if (currentPage < 0) currentPage = 0;
-                }
-                displayPage(pages, currentPage);
-            }
-        }
-        
-        gspWaitForVBlank();
-    }
-}
-
-void drawChapterList(const vector<string>& files, int selectedIndex) {
-    consoleClear();
-    printf("Select a chapter:\n\n");
-    for (size_t i = 0; i < files.size(); i++) {
-        string displayName = files[i];
-        size_t lastSlash = displayName.find_last_of('/');
-        if(lastSlash != string::npos) {
-            displayName = displayName.substr(lastSlash + 1);
-        }
-
-        if ((int)i == selectedIndex) {
-            printf(" > %s\n", displayName.c_str());
-        } else {
-            printf("   %s\n", displayName.c_str());
-        }
-    }
-    printf("\nUse D-Pad UP/DOWN to navigate. A to select. B to go back.\n");
-    gfxFlushBuffers();
-    gfxSwapBuffers();
-}
-
-
-void displayChapterMenu(const char* epubPath) {
+// This function replaces the chapter menu and reads the entire book into one document
+void readAndDisplayBook(const char* epubPath) {
     vector<string> chapterList = getChapterList(epubPath);
 
     if (chapterList.empty()) {
@@ -518,34 +402,97 @@ void displayChapterMenu(const char* epubPath) {
         return;
     }
 
-    int selected = 0;
-    bool needsRedraw = true; // Flag to control drawing
+    string fullBookText; // This will hold the content of the entire book
 
+    struct archive* a = archive_read_new();
+    archive_read_support_format_zip(a);
+
+    if (archive_read_open_filename(a, epubPath, 10240) != ARCHIVE_OK) {
+        printf("Failed to open EPUB: %s\n", archive_error_string(a));
+        archive_read_free(a);
+        return;
+    }
+
+    // Loop through each chapter file in the sorted list
+    for (const auto& chapterPath : chapterList) {
+        // We have to re-open the archive for each file search as libarchive works as a stream.
+        // This is inefficient but necessary for this library's API.
+        archive_read_free(a); 
+        a = archive_read_new();
+        archive_read_support_format_zip(a);
+        archive_read_open_filename(a, epubPath, 10240);
+
+        struct archive_entry* entry;
+        while (archive_read_next_header(a, &entry) == ARCHIVE_OK) {
+            if (strcmp(archive_entry_pathname(entry), chapterPath.c_str()) == 0) {
+                char buffer[4096];
+                string fileContent;
+                ssize_t size;
+
+                while ((size = archive_read_data(a, buffer, sizeof(buffer))) > 0) {
+                    fileContent.append(buffer, size);
+                }
+
+                fileContent = decodeHtmlEntities(fileContent);
+
+                XMLDocument doc;
+                string extractedText;
+                if (doc.Parse(fileContent.c_str()) == XML_SUCCESS) {
+                    if (XMLElement* body = doc.FirstChildElement("html")->FirstChildElement("body")) {
+                        extractText(body, extractedText);
+                        fullBookText += extractedText + "\n\n"; // Append text with separators
+                    }
+                }
+                break; 
+            }
+            archive_read_data_skip(a);
+        }
+    }
+    archive_read_free(a);
+
+    // --- Now, handle the combined text just like you did for a single chapter ---
+
+    string wrappedFullText = wordWrap(fullBookText, WORD_WRAP_WIDTH);
+    vector<string> pages = paginateFile(wrappedFullText, currentSettings.pageSize);
+    int currentPage = 0;
+    
+    displayPage(pages, currentPage);
     while (aptMainLoop()) {
-        // Only draw the menu when the selection changes or we return from the reader
-        if (needsRedraw) {
-            drawChapterList(chapterList, selected);
-            needsRedraw = false; // Reset the flag after drawing
-        }
-
         hidScanInput();
-        u32 kDown = hidKeysDown();
+        u32 kdown = hidKeysDown();
 
-        if (kDown & KEY_B) break;
-
-        if (kDown & (KEY_DOWN | KEY_CPAD_DOWN)) {
-            selected = (selected + 1) % chapterList.size();
-            needsRedraw = true; // Flag for redraw
+        if (kdown & KEY_B) {
+            saveSettings(currentSettings);
+            break;
         }
-        if (kDown & (KEY_UP | KEY_CPAD_UP)) {
-            selected = (selected - 1 + chapterList.size()) % chapterList.size();
-            needsRedraw = true; // Flag for redraw
+        if ((kdown & KEY_L) && currentPage > 0) {
+            currentPage--;
+            displayPage(pages, currentPage);
         }
-        if (kDown & KEY_A) {
-            readAndDisplayChapter(epubPath, chapterList[selected].c_str());
-            needsRedraw = true; // After returning from the reader, redraw the menu
+        if ((kdown & KEY_R) && currentPage < (int)pages.size() - 1) {
+            currentPage++;
+            displayPage(pages, currentPage);
         }
-
+        
+        if (kdown & (KEY_UP | KEY_CPAD_UP)) {
+            if (currentSettings.pageSize < maxPageSize) {
+                currentSettings.pageSize = min(maxPageSize, currentSettings.pageSize + pageSizeStep);
+                pages = paginateFile(wrappedFullText, currentSettings.pageSize);
+                if (currentPage >= (int)pages.size()) currentPage = (int)pages.size() - 1;
+                if (currentPage < 0) currentPage = 0;
+                displayPage(pages, currentPage);
+            }
+        }
+        if (kdown & (KEY_DOWN | KEY_CPAD_DOWN)) {
+            if (currentSettings.pageSize > minPageSize) {
+                currentSettings.pageSize = max(minPageSize, currentSettings.pageSize - pageSizeStep);
+                pages = paginateFile(wrappedFullText, currentSettings.pageSize);
+                if (currentPage >= (int)pages.size()) currentPage = (int)pages.size() - 1;
+                if (currentPage < 0) currentPage = 0;
+                displayPage(pages, currentPage);
+            }
+        }
+        
         gspWaitForVBlank();
     }
 }
@@ -553,20 +500,17 @@ void displayChapterMenu(const char* epubPath) {
 void displaySettingsMenu() {
     int selectedSetting = 0;
     const int numSettings = 2;
-    bool needsRedraw = true; // Flag to control drawing
+    bool needsRedraw = true; 
 
     while (aptMainLoop()) {
-        // Only draw the menu when something changes
         if (needsRedraw) {
             consoleClear();
             printf("--- Settings ---\n\n");
 
-            // Option 1: Page Size
             printf("%s Page Size: %zu\n",
                    (selectedSetting == 0 ? ">" : " "),
                    currentSettings.pageSize);
 
-            // Option 2: Text Color
             printf("%s Text Color: %s\n",
                    (selectedSetting == 1 ? ">" : " "),
                    getColourName(currentSettings.currentTextColor).c_str());
@@ -578,7 +522,7 @@ void displaySettingsMenu() {
 
             gfxFlushBuffers();
             gfxSwapBuffers();
-            needsRedraw = false; // Reset the flag after drawing
+            needsRedraw = false;
         }
 
         hidScanInput();
@@ -589,7 +533,6 @@ void displaySettingsMenu() {
             break;
         }
 
-        // --- Navigation ---
         if (kDown & (KEY_DOWN | KEY_CPAD_DOWN)) {
             selectedSetting = (selectedSetting + 1) % numSettings;
             needsRedraw = true;
@@ -599,7 +542,6 @@ void displaySettingsMenu() {
             needsRedraw = true;
         }
 
-        // --- Value Changes ---
         if (selectedSetting == 0) { // Page Size
             if ((kDown & (KEY_DLEFT | KEY_CPAD_LEFT)) && currentSettings.pageSize > minPageSize) {
                 currentSettings.pageSize = max(minPageSize, currentSettings.pageSize - pageSizeStep);
@@ -619,12 +561,10 @@ void displaySettingsMenu() {
             }
         } else if (selectedSetting == 1) { // Text Color
             if (kDown & (KEY_DRIGHT | KEY_CPAD_RIGHT)) {
-                // Cycle forward through colors
                 currentSettings.currentTextColor = (Colour)((currentSettings.currentTextColor + 1) % (CYAN + 1));
                 needsRedraw = true;
             }
             if (kDown & (KEY_DLEFT | KEY_CPAD_LEFT)) {
-                // Cycle backward through colors
                 currentSettings.currentTextColor = (Colour)((currentSettings.currentTextColor - 1 + (CYAN + 1)) % (CYAN + 1));
                 needsRedraw = true;
             }
@@ -633,6 +573,108 @@ void displaySettingsMenu() {
         gspWaitForVBlank();
     }
 }
+
+void drawDirectoryMenu(const std::vector<std::string>& dirs, int selectedIndex) {
+    consoleClear();
+    printf("Select a Directory:\n\n");
+
+    for (size_t i = 0; i < dirs.size(); i++) {
+        std::string displayName = dirs[i];
+        if (dirs[i] == "sdmc:/ebooks") {
+            displayName = "Root 'ebooks' Folder";
+        } else {
+            size_t lastSlash = dirs[i].find_last_of('/');
+            if (lastSlash != std::string::npos) {
+                displayName = dirs[i].substr(lastSlash + 1);
+            }
+        }
+        
+        if ((int)i == selectedIndex) {
+            printf(" > %s\n", displayName.c_str());
+        } else {
+            printf("   %s\n", displayName.c_str());
+        }
+    }
+
+    printf("\nUse D-Pad to navigate.\n");
+    printf("A: Select | START: Exit | SELECT: Settings\n");
+}
+
+void drawBookList(const std::string& dirName, const std::vector<std::string>& books, int selectedIndex) {
+    consoleClear();
+    
+    std::string displayName = dirName;
+    if (dirName == "sdmc:/ebooks") {
+        displayName = "Root 'ebooks' Folder";
+    } else {
+        size_t lastSlash = dirName.find_last_of('/');
+        if (lastSlash != std::string::npos) {
+            displayName = dirName.substr(lastSlash + 1);
+        }
+    }
+    printf("Directory: %s\n\n", displayName.c_str());
+
+    if (books.empty()) {
+        printf("No books found in this directory.\n");
+    } else {
+        for (size_t i = 0; i < books.size(); i++) {
+            if ((int)i == selectedIndex) {
+                printf(" > %s\n", books[i].c_str());
+            } else {
+                printf("   %s\n", books[i].c_str());
+            }
+        }
+    }
+
+    printf("\nUse D-Pad to navigate books.\n");
+    printf("A: Select Book | B: Back to Directories\n");
+}
+
+void displayBookMenu(const std::string& dirPath, const std::vector<std::string>& books) {
+    int selectedBook = 0;
+    bool needsRedraw = true;
+
+    while (aptMainLoop()) {
+        if (needsRedraw) {
+            drawBookList(dirPath, books, selectedBook);
+            gfxFlushBuffers();
+            gfxSwapBuffers();
+            needsRedraw = false;
+        }
+
+        hidScanInput();
+        u32 kDown = hidKeysDown();
+
+        if (kDown & KEY_B) {
+            break; 
+        }
+
+        if (kDown & (KEY_DOWN | KEY_CPAD_DOWN)) {
+            if (!books.empty()) {
+                selectedBook = (selectedBook + 1) % books.size();
+                needsRedraw = true;
+            }
+        }
+
+        if (kDown & (KEY_UP | KEY_CPAD_UP)) {
+            if (!books.empty()) {
+                selectedBook = (selectedBook - 1 + books.size()) % books.size();
+                needsRedraw = true;
+            }
+        }
+
+        if (kDown & KEY_A) {
+            if (!books.empty()) {
+                std::string path = dirPath + "/" + books[selectedBook];
+                readAndDisplayBook(path.c_str()); // <-- Changed to call the new function
+                needsRedraw = true; 
+            }
+        }
+        
+        gspWaitForVBlank();
+    }
+}
+
 
 int main(int argc, char** argv) {
     gfxInitDefault();
@@ -656,10 +698,12 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    vector<string> ePubList = searchEPub(ebookDir);
-    if (ePubList.empty()) {
+    std::map<std::string, std::vector<std::string>> ePubsByDirectory;
+    recursiveSearchEPub(ebookDir, ePubsByDirectory);
+    
+    if (ePubsByDirectory.empty()) {
         consoleClear();
-        printf("No .epub files found in '%s'.\n", ebookDir);
+        printf("No .epub files found in '%s' or its subdirectories.\n", ebookDir);
         printf("\nPress START to exit.\n");
         while (aptMainLoop()) {
             hidScanInput();
@@ -669,11 +713,16 @@ int main(int argc, char** argv) {
         gfxExit();
         return 0;
     }
-
-    int selected = 0;
     
-    // Initial draw of the main menu
-    drawMainMenu(ePubList, selected);
+    std::vector<std::string> directories;
+    for (const auto& pair : ePubsByDirectory) {
+        directories.push_back(pair.first);
+    }
+    std::sort(directories.begin(), directories.end());
+
+    int selectedDir = 0;
+    
+    drawDirectoryMenu(directories, selectedDir);
     gfxFlushBuffers();
     gfxSwapBuffers();
 
@@ -686,17 +735,18 @@ int main(int argc, char** argv) {
         if (kDown & KEY_START) break;
 
         if (kDown & (KEY_DOWN | KEY_CPAD_DOWN)) {
-            selected = (selected + 1) % ePubList.size();
+            selectedDir = (selectedDir + 1) % directories.size();
             needsRedraw = true;
         }
         if (kDown & (KEY_UP | KEY_CPAD_UP)) {
-            selected = (selected - 1 + ePubList.size()) % ePubList.size();
+            selectedDir = (selectedDir - 1 + directories.size()) % directories.size();
             needsRedraw = true;
         }
         if (kDown & KEY_A) {
-            string path = string(ebookDir) + "/" + ePubList[selected];
-            displayChapterMenu(path.c_str());
-            needsRedraw = true; 
+            const std::string& selectedDirPath = directories[selectedDir];
+            const std::vector<std::string>& booksInDir = ePubsByDirectory.at(selectedDirPath);
+            displayBookMenu(selectedDirPath, booksInDir);
+            needsRedraw = true;
         }
         if (kDown & KEY_SELECT) {
             displaySettingsMenu();
@@ -704,7 +754,7 @@ int main(int argc, char** argv) {
         }
 
         if (needsRedraw) {
-            drawMainMenu(ePubList, selected);
+            drawDirectoryMenu(directories, selectedDir);
             gfxFlushBuffers();
             gfxSwapBuffers();
         }
